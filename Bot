@@ -1,0 +1,222 @@
+require("dotenv").config();
+const { Client, GatewayIntentBits, Partials, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, TextInputBuilder, TextInputStyle, ModalBuilder } = require("discord.js");
+
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
+    ],
+    partials: [Partials.Channel]
+});
+
+client.once("ready", () => {
+    console.log(`${client.user.tag} è online!`);
+});
+
+// ID delle categorie per ogni tipo di ticket
+const categories = {
+    segnala_un_player: '1355581552628862986',
+    segnala_un_bug: '1355581629107667186',
+    appella_un_ban: '1355581727535267880',
+    altro: '1355581868124409866'
+};
+
+// ID dei ruoli dello staff autorizzati a chiudere i ticket
+const staffRoles = ['1355546829126762527', '1355546827969269803', '1355546827457433763', '1355546826752917716', '1355546824886321252', '1355546818515177613'];
+
+// Comando /setup per creare il pannello ticket
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isCommand()) return;
+
+    if (interaction.commandName === "setup") {
+        const embed = new EmbedBuilder()
+            .setTitle("Supporto")
+            .setDescription("Ti serve aiuto? Nessun problema! Usa il menu qua sotto per creare un nuovo ticket dove il nostro staff ti assisterà.")
+            .setColor("#0099ff");
+
+        const menu = new StringSelectMenuBuilder()
+            .setCustomId("ticket_select")
+            .setPlaceholder("📌 Seleziona un'opzione")
+            .addOptions(
+                new StringSelectMenuOptionBuilder()
+                    .setLabel("📝 Segnala un player")
+                    .setValue("segnala_un_player")
+                    .setDescription("Comportamenti scorretti di altri player? segnala!"),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel("⚙️ Segnala un bug")
+                    .setValue("segnala_un_bug")
+                    .setDescription("Bug nel server? Segnala!"),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel("🧽 Appella un ban")
+                    .setValue("appella_un_ban")
+                    .setDescription("Ban che ritieni ingiusto? Facci sapere."),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel("✉️ Altro")
+                    .setValue("altro")
+                    .setDescription("Qualsiasi altra forma di supporto generale.")
+            );
+
+        const row = new ActionRowBuilder().addComponents(menu);
+
+        await interaction.reply({ embeds: [embed], components: [row] });
+    }
+});
+
+// Variabili per le domande
+const questions = {
+    segnala_un_player: [
+        { label: "Nome in gioco", placeholder: "Inserisci il tuo nome in gioco", required: true },
+        { label: "Nome del player da segnalare", placeholder: "Inserisci il nome del player", required: true },
+        { label: "Prove video (URL o descrizione)", placeholder: "Fornisci prove video se disponibili", required: false }
+    ],
+    segnala_un_bug: [
+        { label: "Descrizione del bug", placeholder: "Descrivi il bug", required: true },
+        { label: "Passi per riprodurre/prove video", placeholder: "Elenca i passi per riprodurre il bug", required: false }
+    ],
+    appella_un_ban: [
+        { label: "Motivo del ban", placeholder: "Spiega il motivo per cui pensi che il ban sia ingiusto", required: true },
+        { label: "Prove o testimonianze", placeholder: "Fornisci qualsiasi prova o testimonianza", required: false }
+    ],
+    altro: [
+        { label: "Descrizione del problema", placeholder: "Descrivi il problema", required: true }
+    ]
+};
+
+// Mappa per il tipo di ticket
+const ticketTypes = {
+    segnala_un_player: "📝 Segnala un player",
+    segnala_un_bug: "⚙️ Segnala un bug",
+    appella_un_ban: "🧽 Appella un ban",
+    altro: "✉️ Altro"
+};
+
+// Gestione della selezione e raccolta delle risposte per il ticket
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isStringSelectMenu()) return;
+
+    const selectedOption = interaction.values[0];
+
+    if (!ticketTypes[selectedOption]) {
+        return interaction.reply({ content: "Tipo di ticket non valido.", flags: 64 });
+    }
+
+    const categoryId = categories[selectedOption];
+    const category = interaction.guild.channels.cache.get(categoryId);
+
+    if (!category) {
+        return interaction.reply({ content: "Categoria non trovata! Assicurati che il bot abbia accesso alla categoria.", flags: 64 });
+    }
+
+    const modal = new ModalBuilder()
+        .setCustomId(`ticket_modal-${selectedOption}`)
+        .setTitle(`Formulario per ${ticketTypes[selectedOption]}`)
+        .setComponents(
+            questions[selectedOption].map((question, index) =>
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder()
+                        .setCustomId(`answer_${index}`)
+                        .setLabel(question.label)
+                        .setStyle(TextInputStyle.Paragraph)
+                        .setPlaceholder(question.placeholder)
+                        .setRequired(question.required)
+                )
+            )
+        );
+
+    await interaction.showModal(modal);
+});
+
+// Gestione della raccolta delle risposte del modulo
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isModalSubmit()) return;
+
+    const selectedOption = interaction.customId.split('-')[1];
+
+    if (!questions[selectedOption]) {
+        return interaction.reply({ content: "Tipo di ticket non valido.", flags: 64 });
+    }
+
+    try {
+        // Raccogli le risposte dal modulo
+        const answers = questions[selectedOption].map((_, index) => interaction.fields.getTextInputValue(`answer_${index}`));
+
+        // Prepara il contenuto dell'embed con le risposte
+        let embedDescription = '';
+        answers.forEach((answer, index) => {
+            const question = questions[selectedOption][index];
+            embedDescription += `**${question.label}:** ${answer || "N/A"}\n`;
+        });
+
+        // Crea il canale del ticket
+        const categoryId = categories[selectedOption];
+        const category = interaction.guild.channels.cache.get(categoryId);
+
+        if (!category) {
+            console.error("Errore: Categoria non trovata.");
+            return interaction.reply({ content: "Categoria non trovata! Assicurati che il bot abbia accesso alla categoria.", flags: 64 });
+        }
+
+        const channel = await interaction.guild.channels.create({
+            name: `ticket-${interaction.user.username}`,
+            type: 0, // Canale testuale
+            parent: category.id,
+            permissionOverwrites: [
+                {
+                    id: interaction.guild.id,
+                    deny: [PermissionsBitField.Flags.ViewChannel],
+                },
+                {
+                    id: interaction.user.id,
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+                },
+            ],
+        });
+
+        // Crea l'embed con le risposte
+        const embed = new EmbedBuilder()
+            .setTitle(` ${ticketTypes[selectedOption]}`)
+            .setDescription(embedDescription)
+            .setColor("#00ff00");
+
+        const closeButton = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId("close_ticket")
+                .setLabel("🔒 Chiudi Ticket")
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        // Invia l'embed con le risposte e il pulsante per chiudere il ticket
+        await channel.send({ embeds: [embed], components: [closeButton] });
+        await interaction.reply({ content: `Il tuo ticket è stato creato: ${channel}`, flags: 64 });
+
+    } catch (error) {
+        console.error("Errore nella creazione del ticket:", error);
+        await interaction.reply({ content: "Si è verificato un errore durante la creazione del ticket. Per favore riprova.", flags: 64 });
+    }
+});
+
+// Gestione del pulsante per chiudere il ticket
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton()) return;
+
+    if (interaction.customId === "close_ticket") {
+        // Verifica che l'utente sia il proprietario del ticket o un membro dello staff
+        const member = interaction.guild.members.cache.get(interaction.user.id);
+        const isStaff = member.roles.cache.some(role => staffRoles.includes(role.id));
+        const ticketOwner = interaction.channel.name.split('-')[1];
+
+        if (interaction.user.id !== ticketOwner && !isStaff) {
+            return interaction.reply({ content: "Solo lo staff può chiudere un ticket.", ephemeral: true });
+        }
+
+        // Timer di 5 secondi prima di chiudere il ticket
+        setTimeout(async () => {
+            await interaction.channel.delete();
+            await interaction.reply({ content: "Il ticket è stato chiuso.", ephemeral: true });
+        }, 5000); // 5 secondi
+    }
+});
+
+client.login(process.env.TOKEN);
